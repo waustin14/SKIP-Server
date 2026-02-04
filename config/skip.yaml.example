@@ -1,0 +1,32 @@
+---
+localSystemID: "skip1.cml.lab"
+# port: 443            # TLS-PSK port for router clients (default: 443)
+# mtls_port: 8443      # mTLS port for server-to-server (default: 8443)
+
+remoteSystems:
+  - id: "skip2.cml.lab"
+    # 'ip' field can be an IP address or resolvable hostname
+    ip: "172.31.255.2"
+    # mtls_port: 8443      # Optional: override global remote mTLS port
+    pubkey_path: "/data/appdata/secrets/skip2_kem_pub.pem"
+  - id: "skip3.sml.lab"
+    ip: "172.31.255.3"
+    pubkey_path: "/data/appdata/secrets/skip3_kem_pub.pem"
+    
+algorithm: "PRF"
+default_key_size_bits: 256
+default_entropy_bits: 256
+keystore_path: "/data/appdata/secrets/keystore.db"
+kem_pub_key_path: "/data/appdata/secrets/kem_pub.key"
+kem_priv_key_path: "/data/appdata/secrets/kem_priv.key"
+
+# TLS-PSK settings for SKIP clients (routers)
+use_psk: true
+psk_file: "/data/appdata/secrets/psk.txt"
+psk_identity: "skip1.cml.lab"
+
+# Certificate-based mTLS settings for server-to-server communication
+use_ssl: true
+certfile: "/data/appdata/certs/skip1.pem.crt"
+keyfile: "/data/appdata/certs/skip1_key.pem"
+cafile: "/data/appdata/certs/ca/ca.pem"
