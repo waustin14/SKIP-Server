@@ -9,7 +9,7 @@ remoteSystems:
     ip: "172.31.255.2"
     # mtls_port: 8443      # Optional: override global remote mTLS port
     pubkey_path: "/data/appdata/secrets/skip2_kem_pub.pem"
-  - id: "skip3.sml.lab"
+  - id: "skip3.cml.lab"
     ip: "172.31.255.3"
     pubkey_path: "/data/appdata/secrets/skip3_kem_pub.pem"
     
