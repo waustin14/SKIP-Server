@@ -11,6 +11,7 @@ RUN python3 -m pip install --no-cache-dir -r requirements.txt
 COPY src/skip_server.py /app/skip_server.py
 COPY src/secure_keystore.py /app/secure_keystore.py
 COPY src/secure_keyloader.py /app/secure_keyloader.py
+COPY src/pem_utils.py /app/pem_utils.py
 
 EXPOSE 443/tcp 8443/tcp
 
