@@ -17,6 +17,7 @@ from fastapi import FastAPI, HTTPException, Query
 from pqcrypto.kem.ml_kem_1024 import decrypt, encrypt
 from pydantic import BaseModel, Field
 
+from pem_utils import load_kem_public_key_from_pem
 from secure_keyloader import SecureKeyLoader
 from secure_keystore import SecureKeyStore
 
@@ -113,11 +114,10 @@ class SkipServer:
         if self.use_psk and self.psk_file:
             self._load_psk_file(self.psk_file)
 
-        kem_pub_key_path = self.config.get("kem_pub_key_path", "certs/skip1.pem.crt")
-        with open(kem_pub_key_path, "r") as f:
-            self.kem_pub_key = bytes.fromhex(f.read().strip())
-        self.kem_priv_key_path = self.config.get("kem_priv_key_path", "certs/skip1.pem.key")
-        keystore_path = self.config.get("keystore_path", "keystore.db")
+        kem_pub_key_path = self.config.get("kem_pub_key_path", "secrets/kem_pub.pem")
+        self.kem_pub_key = load_kem_public_key_from_pem(kem_pub_key_path)
+        self.kem_priv_key_path = self.config.get("kem_priv_key_path", "secrets/kem_priv.pem")
+        keystore_path = self.config.get("keystore_path", "secrets/keystore.db")
         self.keystore = SecureKeyStore(filepath=keystore_path)
         self.key_records: Dict[str, str] = {}
 
@@ -224,7 +224,11 @@ class SkipServer:
             remote_system = next((r for r in self.config.get("remoteSystems", []) if r["id"] == remoteSystemID), None)
             if not remote_system:
                 raise ValueError(f"Remote system with ID '{remoteSystemID}' not found in configuration.")
-            remote_pub_key = bytes.fromhex(remote_system.get("pubkey"))
+            # Load remote public key from PEM file path specified in config
+            remote_pub_key_path = remote_system.get("pubkey_path")
+            if not remote_pub_key_path:
+                raise ValueError(f"Remote system '{remoteSystemID}' missing 'pubkey_path' in configuration.")
+            remote_pub_key = load_kem_public_key_from_pem(remote_pub_key_path)
             ciphertext, shared_secret = encrypt(remote_pub_key)
             kem_payload = KEMPayload(
                 system_id=self.local_system_id,
@@ -517,7 +521,11 @@ class SkipServer:
                 return {"status": 500, "body": {"detail": f"Remote system '{remote_system_id}' not found."}}
             
             try:
-                remote_pub_key = bytes.fromhex(remote_system.get("pubkey", ""))
+                # Load remote public key from PEM file path specified in config
+                remote_pub_key_path = remote_system.get("pubkey_path")
+                if not remote_pub_key_path:
+                    return {"status": 500, "body": {"detail": f"Remote system '{remote_system_id}' missing 'pubkey_path' in configuration."}}
+                remote_pub_key = load_kem_public_key_from_pem(remote_pub_key_path)
                 ciphertext, shared_secret = encrypt(remote_pub_key)
             except Exception as e:
                 print(f"KEM encryption error: {e}", file=sys.stderr)
