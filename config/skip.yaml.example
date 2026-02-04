@@ -17,8 +17,8 @@ algorithm: "PRF"
 default_key_size_bits: 256
 default_entropy_bits: 256
 keystore_path: "/data/appdata/secrets/keystore.db"
-kem_pub_key_path: "/data/appdata/secrets/kem_pub.key"
-kem_priv_key_path: "/data/appdata/secrets/kem_priv.key"
+kem_pub_key_path: "/data/appdata/secrets/kem_pub.pem"
+kem_priv_key_path: "/data/appdata/secrets/kem_priv.pem"
 
 # TLS-PSK settings for SKIP clients (routers)
 use_psk: true
