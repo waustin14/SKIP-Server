@@ -160,6 +160,12 @@ def _extract_ml_kem_private_key(der_bytes: bytes) -> bytes:
         privateKey OCTET STRING,
         attributes [0] IMPLICIT Attributes OPTIONAL
     }
+    
+    OpenSSL encodes ML-KEM private keys with the privateKey OCTET STRING containing:
+    SEQUENCE {
+        OCTET STRING (seed, 64 bytes for ML-KEM-1024),
+        OCTET STRING (raw private key, 3168 bytes for ML-KEM-1024)
+    }
     """
     offset = 0
     
@@ -218,6 +224,27 @@ def _extract_ml_kem_private_key(der_bytes: bytes) -> bytes:
         inner_len, consumed = _parse_der_length(raw_key, inner_offset)
         inner_offset += consumed
         raw_key = raw_key[inner_offset:inner_offset + inner_len]
+    
+    # OpenSSL ML-KEM format: SEQUENCE { OCTET STRING (seed), OCTET STRING (private key) }
+    # We need to extract the second OCTET STRING which contains the actual 3168-byte key
+    if raw_key[0] == 0x30:  # SEQUENCE wrapper
+        inner_offset = 1
+        seq_len, consumed = _parse_der_length(raw_key, inner_offset)
+        inner_offset += consumed
+        
+        # Skip first OCTET STRING (seed - 64 bytes for ML-KEM-1024)
+        if raw_key[inner_offset] == 0x04:
+            inner_offset += 1
+            seed_len, consumed = _parse_der_length(raw_key, inner_offset)
+            inner_offset += consumed
+            inner_offset += seed_len  # Skip seed bytes
+            
+            # Extract second OCTET STRING (the actual private key)
+            if raw_key[inner_offset] == 0x04:
+                inner_offset += 1
+                key_len, consumed = _parse_der_length(raw_key, inner_offset)
+                inner_offset += consumed
+                raw_key = raw_key[inner_offset:inner_offset + key_len]
     
     return raw_key
 
