@@ -207,9 +207,18 @@ This section covers deploying the SKIP Server as an IOx application on a Cisco r
 - Otherwise, proceed to `Deploy to Router`
 
 ### Build the IOx Package
-
+- Install `ioxclient` from the [Cisco DevNet Portal](https://developer.cisco.com/docs/iox/iox-resource-downloads/#downloads)
+- Clone this repository and enter project directory
 ```bash
-# TODO: Add ioxclient package build commands
+git clone https://github.com/waustin14/SKIP-Server.git && cd SKIP-Server
+```
+- Build the Docker container
+```bash
+docker build -t skip-server .
+```
+- Create the IOx package
+```bash
+ioxclient docker package skip-server ./iox
 ```
 
 ### Prepare the Router for IOx Package Installation
@@ -225,7 +234,14 @@ Router(config-if)# ip address 169.254.0.1 255.255.255.252
 - Configure app-hosting parameters for SKIP Server
 ```
 Router(config)# app-hosting appid SKIP_Server
-Router(config-app-hosting)# 
+Router(config-app-hosting)# app-vnic gateway0 virtualportgroup 0 guest-interface 0
+Router(config-app-hosting-gateway0)# guest-ipaddress 169.254.0.2 netmask 255.255.255.252
+Router(config-app-hosting)# app-default-gateway 169.254.0.1 guest-interface 0
+Router(config-app-hosting)# app-resource docker
+Router(config-app-hosting-docker)# prepend-pkg-opts
+Router(config-app-hosting-docker)# run-opts 1 "--env KEYSTORE_MASTER_KEY=<generated key>"
+Router(config-app-hosting-docker)# run-opts 2 "--hostname skip1.cml.lab"
+Router(config-app-hosting)# name-server0 <DNS server> ! if FQDNs are used in skip.yaml
 ```
 - Disable IOx signature validation (signing IOx packages is outside the scope of this project)
 ```
@@ -287,14 +303,14 @@ Router(config-crypto-skip-client)# psk id skip1.cml.lab key hex 0123456789abcdef
 Router(config)# crypto ikev2 keyring SKIP-KR
 Router(config-ikev2-keyring)# peer skip2
 Router(config-ikev2-keyring-peer)# address 10.0.12.2 255.255.255.0
-Router(config-ikev2-keyring-peer)# identity skip2.cml.lab
-Router(config-ikev2-keyring-peer)# ppk dynamic SKIP-CLIENT
+Router(config-ikev2-keyring-peer)# identity fqdn skip2.cml.lab
+Router(config-ikev2-keyring-peer)# ppk dynamic SKIP-CLIENT required
 ```
-- Configure an IKEv2 proposal (fills the role of a transform-set)
+- Configure an IKEv2 proposal
 ```
 Router(config)# crypto ikev2 proposal IKE-PROPOSAL
-Router(config-ikev2-proposal)# encryption aes-cbc-256
-Router(config-ikev2-proposal)# integrity sha512 sha384 sha256
+Router(config-ikev2-proposal)# encryption aes-gcm-256
+Router(config-ikev2-proposal)# prf sha512
 Router(config-ikev2-proposal)# group 21 20 19
 ```
 - Configure an IKEv2 profile leveraging the keyring
@@ -302,19 +318,45 @@ Router(config-ikev2-proposal)# group 21 20 19
 Router(config)# crypto ikev2 profile IKE-PROFILE
 Router(config-ikev2-profile)# proposal IKE-PROPOSAL
 Router(config-ikev2-profile)# match identity remote domain cml.lab
+Router(config-ikev2-profile)# identity local fqdn skip1.cml.lab
 Router(config-ikev2-profile)# authentication local pre-share key cisco
 Router(config-ikev2-profile)# authentication remote pre-share key cisco
 Router(config-ikev2-profile)# keyring ppk SKIP-KR
 ```
 
 ### Step 2: IPsec Configuration
+- Configure an IPsec transform-set
+```
+Router(config)# crypto ipsec transform-set esp-aes 256 esp-sha512-hmac
+Router(cfg-crypto-trans)# mode tunnel
+```
 - Configure an IPsec profile
 ```
 Router(config)# crypto ipsec profile IPSEC-PROFILE
-Router(config-ipsec-profile)# set ikev2-profile IKE-PROFILE
+Router(ipsec-profile)# set transform-set IPSEC-TS
+Router(ipsec-profile)# set ikev2-profile IKE-PROFILE
 ```
 
-### Step 3: Tunnel Configuration
+### Step 3: Create Trustpoint for CA
+- Retrieve the SHA1 fingerprint for your CA certificate (on a separate machine)
+```bash
+openssl x509 -noout -fingerprint -sha1 -in certs/ca/ca.pem | cut -d '=' -f 2 | tr -d ':'
+```
+- Create a new PKI truspoint
+```
+Router(config)# crypto pki trustpoint MyLabCA
+Router(ca-trustpoint)# enrollment terminal
+Router(ca-trustpoint)# revocation-check none
+Router(ca-trustpoint)# hash sha256
+Router(ca-trustpoint)# fingerprint <CA fingerprint>
+```
+- Authenticate the CA certificate to establish trust
+```
+Router# crypto pki authenticate MyLabCA
+Router# <paste CA certificate in PEM format>
+```
+
+### Step 4: Tunnel Configuration
 - Configure the secure tunnel interface
 ```
 Router(config)# interface Tunnel10
@@ -354,6 +396,8 @@ docker run -d \
     -v $(pwd)/config:/data/appdata/config \
     -v $(pwd)/certs:/data/appdata/certs \
     -v $(pwd)/secrets:/data/appdata/secrets \
+    -e "KEYSTORE_MASTER_KEY=<generated key> \
+    --hostname skip1.cml.lab \
     skip-server
 ```
 

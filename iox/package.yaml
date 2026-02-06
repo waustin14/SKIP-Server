@@ -1,0 +1,27 @@
+descriptor-schema-version: "2.17"
+
+info:
+  name: "SKIP-Server"
+  version: "1.1.0"
+  description: "SKIP Server for secure key management and quantum-safe key exchange"
+  author-link: "https://linkedin.com/in/whealton-austin"
+  author-name: "Will Austin (Cisco Systems)"
+
+app:
+  cpuarch: "x86_64"
+  type: "docker"
+  resources:
+    profile: custom
+    cpu: 3000
+    disk: 600
+    memory: 512
+    container-size: 600
+    network:
+      - interface-name: "eth0"
+        ports:
+          tcp: [443, 8443]
+  startup:
+    rootfs: "rootfs.img"
+    workdir: /app
+    target: "python3 /app/skip_server.py --host 0.0.0.0 --config /data/appdata/config/skip.yaml"
+    runtime_options: -e KEYSTORE_MASTER_KEY= --hostname=$(SYSTEM_NAME)
