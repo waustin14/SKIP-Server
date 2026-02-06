@@ -275,7 +275,11 @@ Router# app-hosting data appid SKIP_Server copy bootflash:secrets/skip2_kem_pub.
 ! Copy ML-KEM public keys for all peer SKIP Servers
 ```
 
-### Verify Deployment
+### Start the SKIP Server and Verify Deployment
+- Start the SKIP Server container
+```
+Router# app-hosting start appid SKIP_Server
+```
 - Confirm IOx container is running
 ```
 Router# show app-hosting list
