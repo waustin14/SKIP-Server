@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY requirements.txt /app/requirements.txt
 RUN apt-get update && apt-get upgrade -y
-RUN apt-get install -y iproute2 iputils-ping net-tools grep gcc libssl-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get install -y iproute2 iputils-ping net-tools grep gcc libssl-dev cmake ninja-build make git && rm -rf /var/lib/apt/lists/*
 RUN python3 -m pip install --no-cache-dir --upgrade pip
 RUN python3 -m pip install --no-cache-dir -r requirements.txt
 

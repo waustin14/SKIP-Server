@@ -8,9 +8,16 @@ remoteSystems:
     # 'ip' field can be an IP address or resolvable hostname
     ip: "172.31.255.2"
     # mtls_port: 8443      # Optional: override global remote mTLS port
+    # Optional mTLS client certificate identities expected for this remote system_id.
+    # Match is against peer cert CN and SAN values.
+    # If omitted, defaults to the value of 'id'.
+    mtls_client_identities:
+      - "skip2.cml.lab"
     pubkey_path: "/data/appdata/secrets/skip2_kem_pub.pem"
   - id: "skip3.cml.lab"
     ip: "172.31.255.3"
+    mtls_client_identities:
+      - "skip3.cml.lab"
     pubkey_path: "/data/appdata/secrets/skip3_kem_pub.pem"
     
 algorithm: "PRF"
