@@ -7,26 +7,25 @@ import ssl
 import sys
 import threading
 import uuid
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Set, Tuple
 
 import httpx
+import oqs
 import sslpsk3
 import uvicorn
 import yaml
 from fastapi import FastAPI, HTTPException, Query
-from pqcrypto.kem.ml_kem_1024 import decrypt, encrypt
 from pydantic import BaseModel, Field
 
 from pem_utils import load_kem_public_key_from_pem
 from secure_keyloader import SecureKeyLoader
 from secure_keystore import SecureKeyStore
 
-# TLS-PSK Cipher Suites supported by this server (AES-256 only, matching Cisco IOS XE)
+# TLS-PSK Cipher Suites supported by this server (AES-256 GCM only, matching Cisco IOS XE)
 # 0x00a9 = TLS_PSK_WITH_AES_256_GCM_SHA384
-# 0x00ab = TLS_PSK_WITH_AES_256_CBC_SHA384
 # 0x00af = TLS_DHE_PSK_WITH_AES_256_GCM_SHA384
-# 0x00b3 = TLS_DHE_PSK_WITH_AES_256_CBC_SHA384
-PSK_CIPHER_SUITES = "PSK-AES256-GCM-SHA384:PSK-AES256-CBC-SHA384:DHE-PSK-AES256-GCM-SHA384:DHE-PSK-AES256-CBC-SHA384"
+PSK_CIPHER_SUITES = "PSK-AES256-GCM-SHA384:DHE-PSK-AES256-GCM-SHA384"
+KEM_ALGORITHM = "ML-KEM-1024"
 
 # Sample configuration for the Key Provider (KP)
 KP_CONFIG = {
@@ -120,6 +119,7 @@ class SkipServer:
         keystore_path = self.config.get("keystore_path", "secrets/keystore.db")
         self.keystore = SecureKeyStore(filepath=keystore_path)
         self.key_records: Dict[str, str] = {}
+        self.mtls_client_allowlist = self._build_mtls_client_allowlist()
 
         self._register_routes()
         self.run()
@@ -141,6 +141,54 @@ class SkipServer:
                         self.psk_keys[identity.strip()] = bytes.fromhex(key_hex.strip())
         except FileNotFoundError:
             pass
+
+    def _build_mtls_client_allowlist(self) -> Dict[str, Set[str]]:
+        """
+        Build per-system allowlist of acceptable mTLS client certificate identities.
+        Source: remoteSystems[].mtls_client_identities (or mtls_client_identity).
+        Fallback: remoteSystems[].id.
+        """
+        allowlist: Dict[str, Set[str]] = {}
+        for remote in self.config.get("remoteSystems", []):
+            remote_id = remote.get("id")
+            if not remote_id:
+                continue
+
+            identities = remote.get("mtls_client_identities")
+            if isinstance(identities, list) and identities:
+                allowlist[remote_id] = {str(identity) for identity in identities if identity}
+                continue
+
+            single_identity = remote.get("mtls_client_identity")
+            if single_identity:
+                allowlist[remote_id] = {str(single_identity)}
+                continue
+
+            # Default to remote system ID to preserve compatibility with existing configs.
+            allowlist[remote_id] = {str(remote_id)}
+
+        return allowlist
+
+    @staticmethod
+    def _extract_peer_cert_identities(cert: Optional[dict]) -> Set[str]:
+        """
+        Extract peer identities from TLS certificate in OpenSSL dict form.
+        Includes CN values and SAN values.
+        """
+        identities: Set[str] = set()
+        if not cert:
+            return identities
+
+        for rdn_set in cert.get("subject", ()):
+            for name, value in rdn_set:
+                if name == "commonName" and value:
+                    identities.add(str(value))
+
+        for san_type, san_value in cert.get("subjectAltName", ()):
+            if san_value:
+                identities.add(str(san_value))
+
+        return identities
 
     def _get_psk_for_identity(self, identity: bytes) -> bytes:
         """PSK callback for server: returns the PSK for a given client identity."""
@@ -229,7 +277,7 @@ class SkipServer:
             if not remote_pub_key_path:
                 raise ValueError(f"Remote system '{remoteSystemID}' missing 'pubkey_path' in configuration.")
             remote_pub_key = load_kem_public_key_from_pem(remote_pub_key_path)
-            ciphertext, shared_secret = encrypt(remote_pub_key)
+            ciphertext, shared_secret = self._kem_encapsulate(remote_pub_key)
             kem_payload = KEMPayload(
                 system_id=self.local_system_id,
                 key_id=key_id,
@@ -261,8 +309,15 @@ class SkipServer:
             This corresponds to method 4 in Table 2 of the RFC.
             Crucially, this action "zeroizes" the key after retrieval.
             """
-            if key_id in self.keystore.list_keys():
-                key = self.keystore.get(key_id)
+            expected_remote_id = self.key_records.get(key_id)
+            if expected_remote_id != remoteSystemID:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Key for keyId '{key_id}' not found for the requested remoteSystemID.",
+                )
+
+            key = self.keystore.get(key_id)
+            if key is not None:
                 self.keystore.delete(key_id)  # Zeroize the key after providing it
                 return {"keyId": key_id, "key": key}
             raise HTTPException(
@@ -286,7 +341,7 @@ class SkipServer:
                 length = body.length
                 ciphertext = body.ciphertext
                 with SecureKeyLoader(self.kem_priv_key_path) as priv_key:
-                    shared_secret = decrypt(priv_key, bytes.fromhex(ciphertext))
+                    shared_secret = self._kem_decapsulate(priv_key, bytes.fromhex(ciphertext))
                     if length != 256:
                         # Truncate the shared secret to the requested key size
                         shared_secret = shared_secret[:length // 8]
@@ -526,7 +581,7 @@ class SkipServer:
                 if not remote_pub_key_path:
                     return {"status": 500, "body": {"detail": f"Remote system '{remote_system_id}' missing 'pubkey_path' in configuration."}}
                 remote_pub_key = load_kem_public_key_from_pem(remote_pub_key_path)
-                ciphertext, shared_secret = encrypt(remote_pub_key)
+                ciphertext, shared_secret = self._kem_encapsulate(remote_pub_key)
             except Exception as e:
                 print(f"KEM encryption error: {e}", file=sys.stderr)
                 return {"status": 500, "body": {"detail": "Failed to encrypt key with remote public key."}}
@@ -562,8 +617,19 @@ class SkipServer:
         
         elif path.startswith("/key/"):
             key_id = path[5:]  # Extract key_id from /key/{key_id}
-            if key_id in self.keystore.list_keys():
-                key = self.keystore.get(key_id)
+            remote_system_id = query_params.get("remoteSystemID")
+            if not remote_system_id:
+                return {"status": 400, "body": {"detail": "remoteSystemID query parameter is required."}}
+
+            expected_remote_id = self.key_records.get(key_id)
+            if expected_remote_id != remote_system_id:
+                return {
+                    "status": 400,
+                    "body": {"detail": f"Key for keyId '{key_id}' not found for the requested remoteSystemID."},
+                }
+
+            key = self.keystore.get(key_id)
+            if key is not None:
                 self.keystore.delete(key_id)
                 return {"status": 200, "body": {"keyId": key_id, "key": key}}
             return {"status": 400, "body": {"detail": f"Key for keyId '{key_id}' not found."}}
@@ -665,6 +731,8 @@ class SkipServer:
         ssl_sock = None
         try:
             ssl_sock = ssl_context.wrap_socket(client_sock, server_side=True)
+            peer_cert = ssl_sock.getpeercert()
+            peer_identities = self._extract_peer_cert_identities(peer_cert)
             print(f"mTLS handshake successful from {client_addr[0]}:{client_addr[1]}")
             
             # Read HTTP request (including body for POST)
@@ -713,7 +781,7 @@ class SkipServer:
             
             # Route the request (handle POST for /key-exchange)
             if method == "POST" and path == "/key-exchange":
-                response = self._handle_key_exchange_post(body_part)
+                response = self._handle_key_exchange_post(body_part, peer_identities)
             else:
                 # Parse query parameters for GET requests
                 query_params = {}
@@ -742,7 +810,7 @@ class SkipServer:
             except Exception:
                 pass
 
-    def _handle_key_exchange_post(self, body: str) -> dict:
+    def _handle_key_exchange_post(self, body: str, peer_identities: Set[str]) -> dict:
         """Handle POST /key-exchange for server-to-server key exchange."""
         try:
             payload = json.loads(body)
@@ -753,9 +821,15 @@ class SkipServer:
             
             if not all([remote_system_id, key_id, ciphertext]):
                 return {"status": 400, "body": {"detail": "Missing required fields."}}
+
+            allowed_identities = self.mtls_client_allowlist.get(remote_system_id, set())
+            if not allowed_identities:
+                return {"status": 403, "body": {"detail": "Unauthorized mTLS client for requested system_id."}}
+            if not peer_identities or peer_identities.isdisjoint(allowed_identities):
+                return {"status": 403, "body": {"detail": "mTLS client certificate identity does not match system_id."}}
             
             with SecureKeyLoader(self.kem_priv_key_path) as priv_key:
-                shared_secret = decrypt(priv_key, bytes.fromhex(ciphertext))
+                shared_secret = self._kem_decapsulate(priv_key, bytes.fromhex(ciphertext))
                 if length != 256:
                     shared_secret = shared_secret[:length // 8]
                 self.keystore.set(key_id, shared_secret.hex())
@@ -774,6 +848,18 @@ class SkipServer:
         except Exception as e:
             print(f"Key exchange error: {e}", file=sys.stderr)
             return {"status": 400, "body": {"detail": "Failed to decapsulate key."}}
+
+    @staticmethod
+    def _kem_encapsulate(public_key: bytes) -> Tuple[bytes, bytes]:
+        """Encapsulate a shared secret for the given ML-KEM public key."""
+        with oqs.KeyEncapsulation(KEM_ALGORITHM) as kem:
+            return kem.encap_secret(public_key)
+
+    @staticmethod
+    def _kem_decapsulate(private_key: bytes, ciphertext: bytes) -> bytes:
+        """Decapsulate a shared secret using the given ML-KEM private key."""
+        with oqs.KeyEncapsulation(KEM_ALGORITHM, private_key) as kem:
+            return kem.decap_secret(ciphertext)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Start the SkipServer.")

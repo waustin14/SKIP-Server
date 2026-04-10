@@ -1,7 +1,7 @@
 """Utility functions for parsing OpenSSL PEM format ML-KEM keys.
 
 These functions parse PEM-formatted ML-KEM keys and extract the raw key bytes
-for use with the pqcrypto library. Since the cryptography library may not
+for use with liboqs-python. Since the cryptography library may not
 natively support ML-KEM OIDs, we manually parse the ASN.1 structure.
 
 ML-KEM OIDs (NIST FIPS 203):
@@ -258,7 +258,7 @@ def load_kem_public_key_from_pem(pem_path: str) -> bytes:
                   (-----BEGIN PUBLIC KEY-----)
         
     Returns:
-        Raw public key bytes suitable for use with pqcrypto encrypt()
+        Raw public key bytes suitable for use with liboqs-python KEM APIs
         
     Raises:
         FileNotFoundError: If the PEM file does not exist
@@ -288,7 +288,7 @@ def load_kem_private_key_from_pem(pem_path: str, password: Optional[bytes] = Non
         password: Currently unused (encrypted keys not supported)
         
     Returns:
-        Raw private key bytes suitable for use with pqcrypto decrypt()
+        Raw private key bytes suitable for use with liboqs-python KEM APIs
         
     Raises:
         FileNotFoundError: If the PEM file does not exist
