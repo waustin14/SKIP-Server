@@ -36,7 +36,7 @@ idna==3.10
     # via
     #   anyio
     #   httpx
-liboqs-python==0.14.1
+liboqs-python==0.16.0
     # via skip-server (pyproject.toml)
 pycparser==2.22
     # via cffi
