@@ -3,7 +3,14 @@
 # Default values
 PUB_FILE="kem_pub.key"
 PRIV_FILE="kem_priv.key"
-ALGORITHM="ML-KEM-1024" # Note: Some older OQS builds might use "kyber1024"
+
+# Candidate algorithm names, in priority order:
+#   1. "ML-KEM-1024"  - native OpenSSL 3.5+ naming (FIPS 203 standard name)
+#   2. "mlkem1024"    - current oqs-provider naming (liboqs >= 0.14.0-ish, post FIPS-203 rename)
+#   3. "kyber1024"    - older oqs-provider naming (pre-rename, OpenSSL 3 provider era)
+#   4. "Kyber1024"    - legacy openssl-oqs (OpenSSL 1.1.1 fork) capitalized naming
+CANDIDATE_ALGORITHMS=("ML-KEM-1024" "mlkem1024" "kyber1024" "Kyber1024")
+ALGORITHM=""
 
 # Function to display usage
 usage() {
@@ -40,15 +47,33 @@ if ! command -v openssl &> /dev/null; then
     exit 1
 fi
 
-# Check if the algorithm is supported by the installed OpenSSL
-# We look for the algorithm in the list of supported public key algorithms
-if ! openssl list -public-key-algorithms | grep -iq "ML-KEM-1024"; then
-    echo "Error: Algorithm '$ALGORITHM' not found in OpenSSL."
-    echo "Note: You need OpenSSL with the OQS (Open Quantum Safe) provider enabled."
-    echo "If you are using an older OQS build, the algorithm might be named 'kyber1024'."
+# Detect which algorithm name is actually supported by this OpenSSL install.
+# We use word-boundary matching (-w) to avoid false-positive matches on
+# hybrid variants like "x25519_mlkem1024" or "p521_mlkem1024".
+AVAILABLE_ALGS=$(openssl list -public-key-algorithms 2>/dev/null)
+
+for candidate in "${CANDIDATE_ALGORITHMS[@]}"; do
+    if echo "$AVAILABLE_ALGS" | grep -iwq "$candidate"; then
+        ALGORITHM="$candidate"
+        break
+    fi
+done
+
+if [ -z "$ALGORITHM" ]; then
+    echo "Error: No supported ML-KEM-1024 algorithm name found in OpenSSL."
+    echo "Note: You need OpenSSL with the OQS (Open Quantum Safe) provider enabled,"
+    echo "      or an OpenSSL >= 3.5 build with native ML-KEM support."
+    echo ""
+    echo "Checked for the following names, none of which were found:"
+    for candidate in "${CANDIDATE_ALGORITHMS[@]}"; do
+        echo "  - $candidate"
+    done
+    echo ""
+    echo "Run 'openssl list -public-key-algorithms' to see what's actually available."
     exit 1
 fi
 
+echo "Detected algorithm name: $ALGORITHM"
 echo "Generating $ALGORITHM keypair..."
 
 # 1. Generate the Private Key
@@ -73,4 +98,4 @@ else
 fi
 
 echo ""
-echo "Success! ML-KEM-1024 keypair created."
+echo "Success! $ALGORITHM keypair created."
