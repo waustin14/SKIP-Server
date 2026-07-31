@@ -152,102 +152,200 @@ def _extract_ml_kem_public_key(der_bytes: bytes) -> bytes:
 
 def _extract_ml_kem_private_key(der_bytes: bytes) -> bytes:
     """
-    Extract raw ML-KEM private key bytes from a PKCS#8 PrivateKeyInfo DER structure.
-    
-    PrivateKeyInfo ::= SEQUENCE {
-        version INTEGER,
-        privateKeyAlgorithm AlgorithmIdentifier,
-        privateKey OCTET STRING,
-        attributes [0] IMPLICIT Attributes OPTIONAL
-    }
-    
-    OpenSSL encodes ML-KEM private keys with the privateKey OCTET STRING containing:
-    SEQUENCE {
-        OCTET STRING (seed, 64 bytes for ML-KEM-1024),
-        OCTET STRING (raw private key, 3168 bytes for ML-KEM-1024)
-    }
+    Extract raw ML-KEM private key bytes from a PKCS#8 PrivateKeyInfo
+    DER structure.
+
+    Handles these provider representations:
+
+      1. Raw liboqs secret key
+      2. Secret key followed by public key
+      3. Nested OCTET STRING
+      4. SEQUENCE containing seed and expanded private key
     """
     offset = 0
-    
-    # Parse outer SEQUENCE
+
+    # Parse outer SEQUENCE.
     if der_bytes[offset] != 0x30:
         raise ValueError("Expected SEQUENCE tag for PrivateKeyInfo")
+
     offset += 1
-    seq_len, consumed = _parse_der_length(der_bytes, offset)
+    _, consumed = _parse_der_length(der_bytes, offset)
     offset += consumed
-    
-    # Parse version INTEGER (should be 0)
+
+    # Parse version INTEGER.
     if der_bytes[offset] != 0x02:
         raise ValueError("Expected INTEGER tag for version")
+
     offset += 1
     version_len, consumed = _parse_der_length(der_bytes, offset)
     offset += consumed
-    offset += version_len  # Skip version bytes
-    
-    # Parse AlgorithmIdentifier SEQUENCE
+    offset += version_len
+
+    # Parse AlgorithmIdentifier SEQUENCE.
     if der_bytes[offset] != 0x30:
         raise ValueError("Expected SEQUENCE tag for AlgorithmIdentifier")
+
     offset += 1
     algo_len, consumed = _parse_der_length(der_bytes, offset)
     offset += consumed
     algo_end = offset + algo_len
-    
-    # Parse OID
+
+    # Parse algorithm OID.
     if der_bytes[offset] != 0x06:
         raise ValueError("Expected OBJECT IDENTIFIER tag")
+
     offset += 1
     oid_len, consumed = _parse_der_length(der_bytes, offset)
     offset += consumed
     oid_bytes = der_bytes[offset:offset + oid_len]
-    offset += oid_len
-    
-    # Verify it's an ML-KEM OID
+
     if oid_bytes not in ML_KEM_OIDS:
-        raise ValueError(f"Unknown OID, not an ML-KEM key: {oid_bytes.hex()}")
-    
-    # Skip to end of AlgorithmIdentifier
+        raise ValueError(
+            f"Unknown OID, not an ML-KEM key: {oid_bytes.hex()}"
+        )
+
+    algorithm = ML_KEM_OIDS[oid_bytes]
+
+    # Expected raw liboqs key sizes.
+    key_sizes = {
+        "ML-KEM-512": {
+            "secret": 1632,
+            "public": 800,
+        },
+        "ML-KEM-768": {
+            "secret": 2400,
+            "public": 1184,
+        },
+        "ML-KEM-1024": {
+            "secret": 3168,
+            "public": 1568,
+        },
+    }
+
+    expected_secret_length = key_sizes[algorithm]["secret"]
+    expected_public_length = key_sizes[algorithm]["public"]
+    expected_combined_length = (
+        expected_secret_length + expected_public_length
+    )
+
+    # Skip to the end of AlgorithmIdentifier.
     offset = algo_end
-    
-    # Parse OCTET STRING containing the private key
+
+    # Parse PKCS#8 privateKey OCTET STRING.
     if der_bytes[offset] != 0x04:
         raise ValueError("Expected OCTET STRING tag for private key")
+
     offset += 1
     octet_len, consumed = _parse_der_length(der_bytes, offset)
     offset += consumed
-    
-    # The private key may be wrapped in another OCTET STRING
-    raw_key = der_bytes[offset:offset + octet_len]
-    
-    # Check if there's an inner OCTET STRING wrapper (some encoders do this)
-    if raw_key[0] == 0x04:
-        inner_offset = 1
-        inner_len, consumed = _parse_der_length(raw_key, inner_offset)
-        inner_offset += consumed
-        raw_key = raw_key[inner_offset:inner_offset + inner_len]
-    
-    # OpenSSL ML-KEM format: SEQUENCE { OCTET STRING (seed), OCTET STRING (private key) }
-    # We need to extract the second OCTET STRING which contains the actual 3168-byte key
-    if raw_key[0] == 0x30:  # SEQUENCE wrapper
-        inner_offset = 1
-        seq_len, consumed = _parse_der_length(raw_key, inner_offset)
-        inner_offset += consumed
-        
-        # Skip first OCTET STRING (seed - 64 bytes for ML-KEM-1024)
-        if raw_key[inner_offset] == 0x04:
-            inner_offset += 1
-            seed_len, consumed = _parse_der_length(raw_key, inner_offset)
-            inner_offset += consumed
-            inner_offset += seed_len  # Skip seed bytes
-            
-            # Extract second OCTET STRING (the actual private key)
-            if raw_key[inner_offset] == 0x04:
-                inner_offset += 1
-                key_len, consumed = _parse_der_length(raw_key, inner_offset)
-                inner_offset += consumed
-                raw_key = raw_key[inner_offset:inner_offset + key_len]
-    
-    return raw_key
 
+    raw_key = der_bytes[offset:offset + octet_len]
+
+    if len(raw_key) != octet_len:
+        raise ValueError(
+            "Truncated private-key OCTET STRING: "
+            f"expected {octet_len}, got {len(raw_key)}"
+        )
+
+    # Some encoders add a nested OCTET STRING wrapper.
+    if raw_key and raw_key[0] == 0x04:
+        inner_offset = 1
+        inner_len, consumed = _parse_der_length(
+            raw_key,
+            inner_offset,
+        )
+        inner_offset += consumed
+
+        inner_end = inner_offset + inner_len
+
+        if inner_end == len(raw_key):
+            raw_key = raw_key[inner_offset:inner_end]
+
+    # Some OpenSSL encodings use:
+    #
+    # SEQUENCE {
+    #     OCTET STRING seed,
+    #     OCTET STRING expanded-private-key
+    # }
+    if raw_key and raw_key[0] == 0x30:
+        inner_offset = 1
+        seq_len, consumed = _parse_der_length(
+            raw_key,
+            inner_offset,
+        )
+        inner_offset += consumed
+        sequence_end = inner_offset + seq_len
+
+        if sequence_end > len(raw_key):
+            raise ValueError("Truncated inner private-key SEQUENCE")
+
+        octet_values = []
+
+        while inner_offset < sequence_end:
+            if raw_key[inner_offset] != 0x04:
+                break
+
+            inner_offset += 1
+            value_len, consumed = _parse_der_length(
+                raw_key,
+                inner_offset,
+            )
+            inner_offset += consumed
+
+            value_end = inner_offset + value_len
+
+            if value_end > sequence_end:
+                raise ValueError(
+                    "Truncated OCTET STRING in private-key SEQUENCE"
+                )
+
+            octet_values.append(
+                raw_key[inner_offset:value_end]
+            )
+
+            inner_offset = value_end
+
+        # Prefer a candidate with exactly the expected secret-key size.
+        for value in octet_values:
+            if len(value) == expected_secret_length:
+                raw_key = value
+                break
+        else:
+            # A provider may place secret || public in one field.
+            for value in octet_values:
+                if len(value) == expected_combined_length:
+                    raw_key = value
+                    break
+
+    # liboqs-compatible raw secret key.
+    if len(raw_key) == expected_secret_length:
+        return raw_key
+
+    # oqs-provider representation:
+    #
+    #   secret key || public key
+    #
+    # ML-KEM-1024:
+    #   3168 + 1568 = 4736 bytes
+    if len(raw_key) == expected_combined_length:
+        secret_key = raw_key[:expected_secret_length]
+        appended_public_key = raw_key[expected_secret_length:]
+
+        if len(appended_public_key) != expected_public_length:
+            raise ValueError(
+                f"Invalid appended {algorithm} public-key length: "
+                f"got {len(appended_public_key)}, "
+                f"expected {expected_public_length}"
+            )
+
+        return secret_key
+
+    raise ValueError(
+        f"Unsupported {algorithm} private-key representation: "
+        f"got {len(raw_key)} bytes; expected "
+        f"{expected_secret_length} bytes or "
+        f"{expected_combined_length} bytes"
+    )
 
 def load_kem_public_key_from_pem(pem_path: str) -> bytes:
     """
