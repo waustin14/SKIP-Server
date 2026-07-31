@@ -856,9 +856,58 @@ class SkipServer:
             return kem.encap_secret(public_key)
 
     @staticmethod
-    def _kem_decapsulate(private_key: bytes, ciphertext: bytes) -> bytes:
-        """Decapsulate a shared secret using the given ML-KEM private key."""
-        with oqs.KeyEncapsulation(KEM_ALGORITHM, private_key) as kem:
+    def _kem_decapsulate(
+        private_key: bytes,
+        ciphertext: bytes,
+    ) -> bytes:
+        """Decapsulate an ML-KEM ciphertext using a raw liboqs private key."""
+
+        if not isinstance(private_key, bytes):
+            private_key = bytes(private_key)
+
+        if not isinstance(ciphertext, bytes):
+            ciphertext = bytes(ciphertext)
+
+        with oqs.KeyEncapsulation(KEM_ALGORITHM) as probe:
+            expected_private_key_length = probe.details[
+                "length_secret_key"
+            ]
+            expected_ciphertext_length = probe.details[
+                "length_ciphertext"
+            ]
+
+        print(
+            "ML-KEM decapsulation input lengths: "
+            f"private_key={len(private_key)} "
+            f"expected={expected_private_key_length}, "
+            f"ciphertext={len(ciphertext)} "
+            f"expected={expected_ciphertext_length}"
+        )
+
+        if len(private_key) != expected_private_key_length:
+            raise ValueError(
+                "Invalid ML-KEM private key length: "
+                f"got {len(private_key)}, "
+                f"expected {expected_private_key_length}"
+            )
+
+        if len(ciphertext) != expected_ciphertext_length:
+            raise ValueError(
+                "Invalid ML-KEM ciphertext length: "
+                f"got {len(ciphertext)}, "
+                f"expected {expected_ciphertext_length}"
+            )
+
+        with oqs.KeyEncapsulation(
+            KEM_ALGORITHM,
+            secret_key=private_key,
+        ) as kem:
+            if not hasattr(kem, "secret_key"):
+                raise RuntimeError(
+                    "Installed liboqs-python did not import "
+                    "the supplied secret key"
+                )
+
             return kem.decap_secret(ciphertext)
 
 if __name__ == "__main__":
